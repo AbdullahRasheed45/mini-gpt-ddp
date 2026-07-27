@@ -30,6 +30,9 @@ dev = [
     "ruff>=0.5",
 ]
 
+[tool.setuptools]
+py-modules = ["model", "data", "train", "benchmark", "checkpoint_sync", "lightning_train", "orchestrator"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py310"
