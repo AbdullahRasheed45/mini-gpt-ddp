@@ -1,3 +1,4 @@
+import json
 import os
 from unittest.mock import MagicMock
 
@@ -18,7 +19,7 @@ def _check(**kwargs):
 def test_state_machine_rotates_kaggle_lightning_kaggle(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (False, 0))
-    monkeypatch.setattr(orch, "launch_kaggle", lambda username: "fake/kernel")
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username, hf_token, hf_repo: "fake/kernel")
     monkeypatch.setattr(orch, "launch_lightning_job", lambda teamspace: "fake-lightning-job")
 
     kaggle_status = {"value": "running"}
@@ -78,7 +79,7 @@ def test_both_platforms_at_quota_exits_cleanly_without_launching(tmp_path, monke
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (False, 0))
     launched = []
-    monkeypatch.setattr(orch, "launch_kaggle", lambda username: launched.append("kaggle"))
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username, hf_token, hf_repo: launched.append("kaggle"))
     monkeypatch.setattr(orch, "launch_lightning_job", lambda teamspace: launched.append("lightning"))
 
     # prime week_key/month_key via a real call, then seed both quotas as exhausted
@@ -103,7 +104,7 @@ def test_training_complete_stops_launching_new_runs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (True, 5999))
     launched = []
-    monkeypatch.setattr(orch, "launch_kaggle", lambda username: launched.append("kaggle"))
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username, hf_token, hf_repo: launched.append("kaggle"))
 
     state = _check(total_iters_target=6000)
 
@@ -142,3 +143,32 @@ def test_check_kaggle_status_parses_bare_value(monkeypatch):
     monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: fake_result)
 
     assert orch.check_kaggle_status("someuser") == "running"
+
+
+def test_launch_kaggle_injects_secrets_file_and_leaves_repo_untouched(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    project_dir = tmp_path / orch.KAGGLE_PROJECT_DIR
+    project_dir.mkdir()
+    (project_dir / "kernel-metadata.json").write_text("{}")
+    (project_dir / "kaggle_entry.py").write_text("# entry\n")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        push_dir = cmd[cmd.index("-p") + 1]
+        secrets_path = os.path.join(push_dir, "secrets.json")
+        with open(secrets_path) as f:
+            captured["secrets"] = json.load(f)
+        captured["push_dir"] = push_dir
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(orch.subprocess, "run", fake_run)
+
+    kernel = orch.launch_kaggle("someuser", "tok-value", "some/repo")
+
+    assert kernel == f"someuser/{orch.KAGGLE_KERNEL_SLUG}"
+    assert captured["secrets"] == {"HF_TOKEN": "tok-value", "HF_REPO_ID": "some/repo"}
+    # the pushed copy is a temp dir, not the tracked kaggle_project/ directory
+    assert captured["push_dir"] != str(project_dir)
+    # the real, git-tracked directory never gets a secrets file written into it
+    assert not (project_dir / "secrets.json").exists()

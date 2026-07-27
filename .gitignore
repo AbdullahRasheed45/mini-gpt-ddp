@@ -20,6 +20,9 @@ wandb/
 *.pt
 *.ckpt
 
+# Credentials injected at push time by orchestrator.py -- never commit these
+kaggle_project/secrets.json
+
 # Tooling caches
 .pytest_cache/
 .ruff_cache/

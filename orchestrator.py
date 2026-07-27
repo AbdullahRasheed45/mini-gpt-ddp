@@ -14,7 +14,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -125,8 +127,20 @@ def check_kaggle_status(kaggle_username: str) -> str:
     return "unknown"
 
 
-def launch_kaggle(kaggle_username: str) -> str:
-    subprocess.run(["kaggle", "kernels", "push", "-p", KAGGLE_PROJECT_DIR], check=True)
+def launch_kaggle(kaggle_username: str, hf_token: str | None, hf_repo: str | None) -> str:
+    # Kaggle Secrets are only reachable by UI-triggered kernel runs, not by
+    # `kaggle kernels push` -- confirmed empirically (identical failures on
+    # every API-pushed run, success when the same kernel is run manually via
+    # Kaggle's own "Save Version"). Push from an ephemeral temp copy with the
+    # credentials injected as a plain file instead; the tracked
+    # kaggle_project/ directory in git never contains a secret.
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in os.listdir(KAGGLE_PROJECT_DIR):
+            shutil.copy(os.path.join(KAGGLE_PROJECT_DIR, name), tmp)
+        with open(os.path.join(tmp, "secrets.json"), "w") as f:
+            json.dump({"HF_TOKEN": hf_token, "HF_REPO_ID": hf_repo}, f)
+        subprocess.run(["kaggle", "kernels", "push", "-p", tmp], check=True)
+
     kernel = f"{kaggle_username}/{KAGGLE_KERNEL_SLUG}"
     print(f"[orchestrator] launched kaggle kernel {kernel}")
     return kernel
@@ -217,7 +231,7 @@ def run_single_check(kaggle_username: str, lightning_teamspace: str,
         return
 
     if state.active_platform is None and state.kaggle_hours_used_this_week < KAGGLE_HOURS_PER_WEEK_BUDGET:
-        state.active_job_id = launch_kaggle(kaggle_username)
+        state.active_job_id = launch_kaggle(kaggle_username, hf_token, hf_repo)
         state.active_platform = "kaggle"
         state.active_started_at = now.timestamp()
         save_state(state)
