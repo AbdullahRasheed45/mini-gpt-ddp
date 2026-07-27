@@ -1,0 +1,10 @@
+# Core (needed for model.py, train.py, benchmark.py)
+torch>=2.2
+numpy>=1.24
+
+# Data prep (data.py only; imports are deferred so other scripts work without these)
+datasets>=2.18
+tiktoken>=0.6
+
+# Optional experiment tracking (train.py --wandb)
+wandb>=0.16
