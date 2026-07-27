@@ -131,14 +131,26 @@ def launch_kaggle(kaggle_username: str, hf_token: str | None, hf_repo: str | Non
     # Kaggle Secrets are only reachable by UI-triggered kernel runs, not by
     # `kaggle kernels push` -- confirmed empirically (identical failures on
     # every API-pushed run, success when the same kernel is run manually via
-    # Kaggle's own "Save Version"). Push from an ephemeral temp copy with the
-    # credentials injected as a plain file instead; the tracked
-    # kaggle_project/ directory in git never contains a secret.
+    # Kaggle's own "Save Version"). `kaggle kernels push` also has no
+    # mechanism to upload any file other than the single code_file (its
+    # content becomes the entire request body -- no sibling-file bundling),
+    # so the credentials are prepended directly into a temp copy of that
+    # file's source instead. The tracked kaggle_project/ directory in git
+    # never contains a secret; only the ephemeral pushed copy does.
     with tempfile.TemporaryDirectory() as tmp:
-        for name in os.listdir(KAGGLE_PROJECT_DIR):
-            shutil.copy(os.path.join(KAGGLE_PROJECT_DIR, name), tmp)
-        with open(os.path.join(tmp, "secrets.json"), "w") as f:
-            json.dump({"HF_TOKEN": hf_token, "HF_REPO_ID": hf_repo}, f)
+        shutil.copy(os.path.join(KAGGLE_PROJECT_DIR, "kernel-metadata.json"), tmp)
+        with open(os.path.join(KAGGLE_PROJECT_DIR, "kaggle_entry.py")) as f:
+            entry_src = f.read()
+        # self-contained so it's safe to prepend before entry_src's own
+        # imports; entry_src's docstring is no longer the first statement
+        # after this, which only affects __doc__, not execution
+        injected = (
+            "import os as _os\n"
+            f"_os.environ['HF_TOKEN'] = {hf_token!r}\n"
+            f"_os.environ['HF_REPO_ID'] = {hf_repo!r}\n\n"
+        )
+        with open(os.path.join(tmp, "kaggle_entry.py"), "w") as f:
+            f.write(injected + entry_src)
         subprocess.run(["kaggle", "kernels", "push", "-p", tmp], check=True)
 
     kernel = f"{kaggle_username}/{KAGGLE_KERNEL_SLUG}"

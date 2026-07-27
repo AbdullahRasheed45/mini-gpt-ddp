@@ -10,13 +10,17 @@ Credentials: Kaggle Secrets (kaggle_secrets.UserSecretsClient) are only
 reachable by kernel runs triggered through Kaggle's own UI, not by runs
 triggered via `kaggle kernels push` -- confirmed empirically, since the
 same secrets that fail here work fine when the kernel is run manually via
-"Save Version". So orchestrator.py instead writes a secrets.json file into
-this directory right before pushing (never committed to git, sourced from
-GitHub Actions' own secrets), which takes priority; Kaggle Secrets remain a
-fallback for manual, UI-triggered runs of this same kernel.
+"Save Version". `kaggle kernels push` also has no mechanism to upload any
+file other than this single code_file (its content becomes the entire
+request body -- there is no sibling-file bundling), so orchestrator.py
+instead prepends two `os.environ[...] = ...` lines directly to this
+script's source before pushing the rendered copy (sourced from GitHub
+Actions' own secrets; never committed to git, never written to disk here).
+If HF_TOKEN is already set when main() runs, that injected value is used;
+otherwise this falls back to Kaggle Secrets, for manual UI-triggered runs
+of this same kernel.
 """
 
-import json
 import os
 import subprocess
 
@@ -30,13 +34,7 @@ def run(cmd: list[str]) -> None:
 
 
 def main() -> None:
-    secrets_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "secrets.json")
-    if os.path.exists(secrets_path):
-        with open(secrets_path) as f:
-            creds = json.load(f)
-        os.environ["HF_TOKEN"] = creds["HF_TOKEN"]
-        os.environ["HF_REPO_ID"] = creds["HF_REPO_ID"]
-    else:
+    if "HF_TOKEN" not in os.environ:
         from kaggle_secrets import UserSecretsClient
 
         secrets = UserSecretsClient()

@@ -1,4 +1,3 @@
-import json
 import os
 from unittest.mock import MagicMock
 
@@ -145,20 +144,20 @@ def test_check_kaggle_status_parses_bare_value(monkeypatch):
     assert orch.check_kaggle_status("someuser") == "running"
 
 
-def test_launch_kaggle_injects_secrets_file_and_leaves_repo_untouched(tmp_path, monkeypatch):
+def test_launch_kaggle_injects_credentials_into_pushed_source_only(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     project_dir = tmp_path / orch.KAGGLE_PROJECT_DIR
     project_dir.mkdir()
     (project_dir / "kernel-metadata.json").write_text("{}")
-    (project_dir / "kaggle_entry.py").write_text("# entry\n")
+    original_entry_src = '"""entry docstring"""\nimport os\nprint("hi")\n'
+    (project_dir / "kaggle_entry.py").write_text(original_entry_src)
 
     captured = {}
 
     def fake_run(cmd, **kwargs):
         push_dir = cmd[cmd.index("-p") + 1]
-        secrets_path = os.path.join(push_dir, "secrets.json")
-        with open(secrets_path) as f:
-            captured["secrets"] = json.load(f)
+        with open(os.path.join(push_dir, "kaggle_entry.py")) as f:
+            captured["pushed_src"] = f.read()
         captured["push_dir"] = push_dir
         return MagicMock(returncode=0)
 
@@ -167,8 +166,13 @@ def test_launch_kaggle_injects_secrets_file_and_leaves_repo_untouched(tmp_path, 
     kernel = orch.launch_kaggle("someuser", "tok-value", "some/repo")
 
     assert kernel == f"someuser/{orch.KAGGLE_KERNEL_SLUG}"
-    assert captured["secrets"] == {"HF_TOKEN": "tok-value", "HF_REPO_ID": "some/repo"}
+    pushed_src = captured["pushed_src"]
+    assert "tok-value" in pushed_src
+    assert "some/repo" in pushed_src
+    # the injected credentials come before the rest of the script runs
+    assert pushed_src.index("tok-value") < pushed_src.index("print(")
     # the pushed copy is a temp dir, not the tracked kaggle_project/ directory
     assert captured["push_dir"] != str(project_dir)
-    # the real, git-tracked directory never gets a secrets file written into it
-    assert not (project_dir / "secrets.json").exists()
+    # the real, git-tracked file is never modified
+    assert (project_dir / "kaggle_entry.py").read_text() == original_entry_src
+    compile(pushed_src, "kaggle_entry.py", "exec")  # injected prefix must be valid syntax
