@@ -59,6 +59,57 @@ pytest      # unit tests + CPU training smoke test
 ruff check . # lint
 ```
 
+## Automated Training Orchestration
+
+A GitHub Actions cron job (`.github/workflows/orchestrator.yml`, every 15
+min) runs `orchestrator.py --single-check`, a state machine that rotates
+training between **Kaggle** (30 free GPU-hrs/week, 2x T4 via DDP) and
+**Lightning AI** (free monthly GPU credits, 1x T4), so training keeps
+progressing without anyone babysitting sessions. The two platforms hand off
+through a checkpoint on the **Hugging Face Hub**: whichever platform is
+active pulls the latest checkpoint before resuming and pushes after every
+save (`checkpoint_sync.py`), so a run can pick up on the other platform
+exactly where the last one left off.
+
+Colab is deliberately **not** part of this automation -- Google's Colab
+free-tier terms prohibit automated/remote-triggered execution. It remains a
+manual, human-driven fallback only.
+
+### Required GitHub repo secrets
+
+Set these under **Settings > Secrets and variables > Actions**, or via
+`gh secret set NAME --repo <owner>/<repo>` (prompts for hidden input, so the
+value never has to be pasted anywhere visible):
+
+| secret | where it comes from |
+|---|---|
+| `KAGGLE_USERNAME` | your Kaggle username -- the `username` field in `~/.kaggle/kaggle.json` |
+| `KAGGLE_KEY` | your Kaggle API key -- the `key` field in `~/.kaggle/kaggle.json` (Kaggle Account settings > Create New API Token) |
+| `HF_TOKEN` | a **write**-access token from https://huggingface.co/settings/tokens |
+| `HF_REPO_ID` | the private HF model repo used as the checkpoint store, e.g. `your-username/mini-gpt-ddp` |
+| `LIGHTNING_API_KEY` | from https://lightning.ai/settings |
+| `LIGHTNING_USER_ID` | also from https://lightning.ai/settings (shown next to the API key) -- both are needed together for non-interactive `lightning` CLI auth, without a browser |
+| `LIGHTNING_TEAMSPACE` | your Lightning AI teamspace, formatted `{owner}/{teamspace-name}`, shown in the dashboard URL |
+
+### Checking status
+
+- **GitHub Actions tab** -> "GPU Training Orchestrator" -> pick a run -> the
+  `Run orchestrator single check` step logs every decision
+  (`[orchestrator] ...` lines: launched, still running, completed, quota
+  reached, etc).
+- **Training progress**: the `iter` field in
+  `checkpoints/ddp_2gpu.meta.json` on the HF repo (a tiny sidecar file, so
+  checking progress doesn't require downloading the full checkpoint).
+- **Orchestrator state** (`active_platform`, hours used this week/month,
+  last checked iter): persisted as `orchestrator_state.json` in the
+  `orchestrator-state-*` GitHub Actions cache -- visible under **Settings >
+  Actions > Caches**, or read directly from any workflow run's logs.
+
+### Stopping the rotation
+
+Go to the **Actions** tab -> "GPU Training Orchestrator" -> **...** ->
+**Disable workflow**. No code changes needed; re-enable the same way.
+
 ## Experiments to run (these become the writeup)
 
 1. **Scaling efficiency**: benchmark.py at world_size 1 vs 2. Report

@@ -2,9 +2,16 @@
 torch>=2.2
 numpy>=1.24
 
+# Checkpoint sync to Hugging Face Hub (train.py, lightning_train.py, checkpoint_sync.py)
+huggingface_hub>=0.24
+
 # Data prep (data.py only; imports are deferred so other scripts work without these)
 datasets>=2.18
 tiktoken>=0.6
 
 # Optional experiment tracking (train.py --wandb)
 wandb>=0.16
+
+# Orchestrator only (orchestrator.py; not needed to train locally)
+kaggle>=1.6
+lightning-sdk>=0.1

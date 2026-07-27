@@ -1,0 +1,66 @@
+name: GPU Training Orchestrator
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: gpu-orchestrator
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+      LIGHTNING_API_KEY: ${{ secrets.LIGHTNING_API_KEY }}
+      LIGHTNING_USER_ID: ${{ secrets.LIGHTNING_USER_ID }}
+      LIGHTNING_TEAMSPACE: ${{ secrets.LIGHTNING_TEAMSPACE }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install orchestrator dependencies
+        run: pip install kaggle lightning-sdk huggingface_hub
+
+      - name: Validate required secrets
+        run: |
+          missing=()
+          for name in KAGGLE_USERNAME KAGGLE_KEY LIGHTNING_API_KEY LIGHTNING_USER_ID LIGHTNING_TEAMSPACE HF_TOKEN HF_REPO_ID; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Missing required repo secret(s): ${missing[*]}. Add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      # kaggle-cli reads KAGGLE_USERNAME/KAGGLE_KEY from the environment
+      # directly, so no ~/.kaggle/kaggle.json file is needed here.
+
+      # A genuinely fixed cache key can't be reused for both restore and
+      # save: GitHub cache keys are immutable once written, so saving to the
+      # same key on every run would silently no-op after the first. `key`
+      # below is therefore unique per run (so save always succeeds);
+      # `restore-keys` is the fixed prefix that actually makes state persist
+      # across runs, by falling back to the most recent previous entry.
+      - name: Restore orchestrator state
+        uses: actions/cache@v4
+        with:
+          path: orchestrator_state.json
+          key: orchestrator-state-${{ github.run_id }}
+          restore-keys: |
+            orchestrator-state-
+
+      - name: Run orchestrator single check
+        run: python orchestrator.py --single-check

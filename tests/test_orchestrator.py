@@ -1,0 +1,121 @@
+import os
+
+import orchestrator as orch
+
+
+def _check(**kwargs):
+    orch.run_single_check(
+        kaggle_username=kwargs.get("kaggle_username", "kaggle_user"),
+        lightning_teamspace=kwargs.get("lightning_teamspace", "team/space"),
+        hf_repo=kwargs.get("hf_repo", "hf/repo"),
+        hf_token=kwargs.get("hf_token", "tok"),
+        total_iters_target=kwargs.get("total_iters_target", 6000),
+    )
+    return orch.load_state()
+
+
+def test_state_machine_rotates_kaggle_lightning_kaggle(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (False, 0))
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username: "fake/kernel")
+    monkeypatch.setattr(orch, "launch_lightning_job", lambda teamspace: "fake-lightning-job")
+
+    kaggle_status = {"value": "running"}
+    monkeypatch.setattr(orch, "check_kaggle_status", lambda username: kaggle_status["value"])
+    lightning_status = {"value": "running"}
+    monkeypatch.setattr(orch, "check_lightning_status",
+                         lambda job_id, teamspace: lightning_status["value"])
+
+    # 1. no state file -> launch kaggle
+    assert not os.path.exists(orch.STATE_PATH)
+    state = _check()
+    assert state.active_platform == "kaggle"
+    assert state.active_job_id == "fake/kernel"
+
+    # 2. kaggle running -> no transition
+    state = _check()
+    assert state.active_platform == "kaggle"
+
+    # 3. kaggle complete -> hours tallied, goes idle
+    kaggle_status["value"] = "complete"
+    state = _check()
+    assert state.active_platform is None
+    assert state.kaggle_hours_used_this_week > 0
+
+    # A fast unit test can't accumulate 30 real hours, so seed the quota
+    # directly to exercise the "kaggle at budget -> fall through to
+    # lightning" branch. week_key/month_key are already correct from the
+    # calls above, so this won't be clobbered by the period-reset check.
+    state.kaggle_hours_used_this_week = orch.KAGGLE_HOURS_PER_WEEK_BUDGET
+    orch.save_state(state)
+
+    # 4. idle, kaggle at quota -> launch lightning
+    state = _check()
+    assert state.active_platform == "lightning"
+    assert state.active_job_id == "fake-lightning-job"
+
+    # 5. lightning running -> no transition
+    state = _check()
+    assert state.active_platform == "lightning"
+
+    # 6. lightning complete -> hours tallied, goes idle
+    lightning_status["value"] = "complete"
+    state = _check()
+    assert state.active_platform is None
+    assert state.lightning_hours_used_this_month > 0
+
+    # simulate the weekly reset (a new ISO week) freeing up kaggle again
+    state.kaggle_hours_used_this_week = 0.0
+    orch.save_state(state)
+
+    # 7. idle, kaggle back under budget -> back to kaggle
+    state = _check()
+    assert state.active_platform == "kaggle"
+
+
+def test_both_platforms_at_quota_exits_cleanly_without_launching(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (False, 0))
+    launched = []
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username: launched.append("kaggle"))
+    monkeypatch.setattr(orch, "launch_lightning_job", lambda teamspace: launched.append("lightning"))
+
+    # prime week_key/month_key via a real call, then seed both quotas as exhausted
+    state = _check()
+    state.active_platform = None
+    state.active_job_id = None
+    state.kaggle_hours_used_this_week = orch.KAGGLE_HOURS_PER_WEEK_BUDGET
+    state.lightning_hours_used_this_month = orch.LIGHTNING_HOURS_PER_MONTH_BUDGET
+    orch.save_state(state)
+    launched.clear()  # discard the priming call's launch
+
+    capsys.readouterr()
+    state = _check()
+    out = capsys.readouterr().out
+
+    assert launched == []
+    assert state.active_platform is None
+    assert "waiting for reset" in out
+
+
+def test_training_complete_stops_launching_new_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (True, 5999))
+    launched = []
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username: launched.append("kaggle"))
+
+    state = _check(total_iters_target=6000)
+
+    assert launched == []
+    assert state.last_checked_iter == 5999
+
+
+def test_state_round_trips_atomically(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    state = orch.OrchestratorState(active_platform="kaggle", active_job_id="x/y",
+                                    kaggle_hours_used_this_week=3.5)
+    orch.save_state(state)
+
+    assert not os.path.exists(orch.STATE_PATH + ".tmp")
+    loaded = orch.load_state()
+    assert loaded == state

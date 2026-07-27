@@ -35,6 +35,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from checkpoint_sync import pull_checkpoint, push_checkpoint, push_checkpoint_meta
 from model import GPT, GPTConfig
 
 # ----------------------------------------------------------------------------
@@ -68,6 +69,8 @@ def get_args():
     ap.add_argument("--log_interval", type=int, default=10)
     ap.add_argument("--ckpt_interval", type=int, default=250)
     ap.add_argument("--wandb", action="store_true")
+    # checkpoint sync (Hugging Face Hub, for rotating between Kaggle/Lightning)
+    ap.add_argument("--hf_repo", default=os.environ.get("HF_REPO_ID"))
     return ap.parse_args()
 
 
@@ -177,6 +180,13 @@ def main():
     # ---- resume ------------------------------------------------------------
     os.makedirs(args.out_dir, exist_ok=True)
     ckpt_path = os.path.join(args.out_dir, f"{args.run_name}.pt")
+    hf_token = os.environ.get("HF_TOKEN")
+
+    if master and not os.path.exists(ckpt_path):
+        pull_checkpoint(args.hf_repo, ckpt_path, hf_token)
+    if is_ddp:
+        dist.barrier()
+
     start_iter = 0
     if os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -291,6 +301,8 @@ def main():
                 "cuda_rng": torch.cuda.get_rng_state(device) if use_amp else None,
             }, tmp)
             os.replace(tmp, ckpt_path)  # atomic: a mid-save session kill can't corrupt the checkpoint
+            push_checkpoint(args.hf_repo, ckpt_path, hf_token)
+            push_checkpoint_meta(args.hf_repo, ckpt_path, it, args.max_iters, hf_token)
 
     # final checkpoint + sample
     if master:
@@ -298,6 +310,8 @@ def main():
                     "scaler": scaler.state_dict(), "iter": args.max_iters - 1,
                     "config": vars(args), "cpu_rng": torch.get_rng_state(),
                     "cuda_rng": torch.cuda.get_rng_state(device) if use_amp else None}, ckpt_path)
+        push_checkpoint(args.hf_repo, ckpt_path, hf_token)
+        push_checkpoint_meta(args.hf_repo, ckpt_path, args.max_iters - 1, args.max_iters, hf_token)
         print("training complete")
         if not args.smoke_test:
             import tiktoken

@@ -10,6 +10,7 @@ authors = [{ name = "Abdullah Rasheed" }]
 dependencies = [
     "torch>=2.2",
     "numpy>=1.24",
+    "huggingface_hub>=0.24",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,10 @@ data = [
 ]
 tracking = [
     "wandb>=0.16",
+]
+orchestration = [
+    "kaggle>=1.6",
+    "lightning-sdk>=0.1",
 ]
 dev = [
     "pytest>=8.0",
