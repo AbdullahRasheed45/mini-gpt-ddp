@@ -19,6 +19,17 @@ Actions' own secrets; never committed to git, never written to disk here).
 If HF_TOKEN is already set when main() runs, that injected value is used;
 otherwise this falls back to Kaggle Secrets, for manual UI-triggered runs
 of this same kernel.
+
+Dependencies: deliberately does NOT `pip install -r requirements.txt`.
+Kaggle's base image ships a PyTorch build already matched to whatever GPU
+it provisions for this session (observed once: Tesla P100, not the
+requested T4s -- unclear whether machine_shape in kernel-metadata.json
+just isn't honored for API-pushed kernels, or T4s simply weren't available
+in the free-tier pool at that moment). Reinstalling torch from PyPI pulled
+in a build that had dropped support for the P100's older sm_60 compute
+capability and crashed every rank. Only the packages actually missing from
+the base image are installed here; torch/numpy are left untouched so
+whatever GPU shows up gets its correctly pre-matched PyTorch build.
 """
 
 import os
@@ -45,7 +56,7 @@ def main() -> None:
         run(["git", "clone", "--depth", "1", REPO_URL, WORKDIR])
     os.chdir(WORKDIR)
 
-    run(["pip", "install", "-q", "-r", "requirements.txt"])
+    run(["pip", "install", "-q", "huggingface_hub", "tiktoken", "datasets"])
 
     if not os.path.exists("data/train.bin"):
         run(["python", "data.py", "--num_proc", "4"])
