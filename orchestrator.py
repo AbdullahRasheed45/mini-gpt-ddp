@@ -105,13 +105,15 @@ def check_kaggle_status(kaggle_username: str) -> str:
     kernel = f"{kaggle_username}/{KAGGLE_KERNEL_SLUG}"
     result = subprocess.run(["kaggle", "kernels", "status", kernel],
                              capture_output=True, text=True)
-    match = re.search(r'has status "(\w+)"', result.stdout)
+    match = re.search(r'has status "([^"]+)"', result.stdout)
     if not match:
         print(f"[orchestrator] could not parse kaggle status: "
               f"stdout={result.stdout!r} stderr={result.stderr!r}")
         return "unknown"
 
-    status = match.group(1).lower()
+    # observed in the wild as both a bare word ("error") and an
+    # enum-qualified string ("KernelWorkerStatus.ERROR")
+    status = match.group(1).rsplit(".", 1)[-1].lower()
     if status == "complete":
         return "complete"
     if status in ("error", "cancelled", "cancelacknowledged"):

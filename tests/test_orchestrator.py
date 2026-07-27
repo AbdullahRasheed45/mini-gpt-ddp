@@ -1,4 +1,5 @@
 import os
+from unittest.mock import MagicMock
 
 import orchestrator as orch
 
@@ -119,3 +120,25 @@ def test_state_round_trips_atomically(tmp_path, monkeypatch):
     assert not os.path.exists(orch.STATE_PATH + ".tmp")
     loaded = orch.load_state()
     assert loaded == state
+
+
+def test_check_kaggle_status_parses_enum_qualified_value(monkeypatch):
+    # real kaggle-cli output observed in production: the status is the
+    # enum-qualified "KernelWorkerStatus.ERROR", not a bare "error"
+    fake_result = MagicMock(
+        stdout='abdullahrasheed4500/mini-gpt-ddp-orchestrator has status "KernelWorkerStatus.ERROR"\n',
+        stderr="",
+    )
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: fake_result)
+
+    assert orch.check_kaggle_status("abdullahrasheed4500") == "error"
+
+
+def test_check_kaggle_status_parses_bare_value(monkeypatch):
+    fake_result = MagicMock(
+        stdout='someuser/mini-gpt-ddp-orchestrator has status "running"\n',
+        stderr="",
+    )
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: fake_result)
+
+    assert orch.check_kaggle_status("someuser") == "running"
