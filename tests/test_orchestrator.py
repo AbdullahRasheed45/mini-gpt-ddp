@@ -215,6 +215,27 @@ def test_launch_kaggle_detects_error_message_despite_exit_zero(tmp_path, monkeyp
     assert kernel is None
 
 
+def test_launch_lightning_job_splits_teamspace_into_user_and_name(monkeypatch):
+    # real lightning-cli behavior observed in production: `job run` rejected
+    # the combined "owner/name" form accepted by `job list`/`job inspect`
+    # with "Neither user or org are specified, but one of them has to be
+    # the owner of the Teamspace" -- it wants --user and a bare --teamspace
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(orch.subprocess, "run", fake_run)
+
+    job_name = orch.launch_lightning_job("abdullahrasheed45/default-project")
+
+    assert job_name is not None
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--user") + 1] == "abdullahrasheed45"
+    assert cmd[cmd.index("--teamspace") + 1] == "default-project"
+
+
 def test_kaggle_push_failure_falls_through_to_lightning_same_check(tmp_path, monkeypatch):
     # simulates Kaggle's real server-side quota running out mid-week, which
     # our wall-clock hour tracking can't see coming until a push fails

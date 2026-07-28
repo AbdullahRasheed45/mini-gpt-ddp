@@ -222,10 +222,18 @@ def launch_lightning_job(teamspace: str) -> str | None:
         f"git clone --depth 1 {REPO_URL} repo && cd repo && "
         "pip install -q -r requirements.txt && python lightning_train.py"
     )
+    # Inconsistent across lightning-cli subcommands: `job list`/`job inspect`/
+    # `job stop` accept the combined "{owner}/{teamspace}" form directly, but
+    # `job run` wants the bare teamspace name plus a separate --user/--org for
+    # the owner -- confirmed empirically ("Neither user or org are specified,
+    # but one of them has to be the owner of the Teamspace") when the combined
+    # form was passed as --teamspace here.
+    owner, _, teamspace_name = teamspace.partition("/")
     cmd = [
         "lightning", "job", "run",
         "--name", job_name,
-        "--teamspace", teamspace,
+        "--user", owner,
+        "--teamspace", teamspace_name,
         "--machine", "T4",
         "--image", LIGHTNING_IMAGE,
         "--command", command,
