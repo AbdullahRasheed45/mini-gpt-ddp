@@ -176,3 +176,41 @@ def test_launch_kaggle_injects_credentials_into_pushed_source_only(tmp_path, mon
     # the real, git-tracked file is never modified
     assert (project_dir / "kaggle_entry.py").read_text() == original_entry_src
     compile(pushed_src, "kaggle_entry.py", "exec")  # injected prefix must be valid syntax
+
+
+def test_kaggle_push_failure_falls_through_to_lightning_same_check(tmp_path, monkeypatch):
+    # simulates Kaggle's real server-side quota running out mid-week, which
+    # our wall-clock hour tracking can't see coming until a push fails
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (False, 0))
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username, hf_token, hf_repo: None)
+    monkeypatch.setattr(orch, "launch_lightning_job", lambda teamspace: "fake-lightning-job")
+
+    state = _check()
+
+    assert state.kaggle_hours_used_this_week == orch.KAGGLE_HOURS_PER_WEEK_BUDGET
+    # fell through to lightning within the same check, not a second cycle
+    assert state.active_platform == "lightning"
+    assert state.active_job_id == "fake-lightning-job"
+
+
+def test_lightning_launch_failure_treated_as_exhausted_without_crashing(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(orch, "training_complete", lambda *a, **k: (False, 0))
+    monkeypatch.setattr(orch, "launch_kaggle", lambda username, hf_token, hf_repo: "fake/kernel")
+    monkeypatch.setattr(orch, "launch_lightning_job", lambda teamspace: None)
+
+    # prime week_key/month_key, then put kaggle at quota so lightning is tried
+    state = _check()
+    state.active_platform = None
+    state.active_job_id = None
+    state.kaggle_hours_used_this_week = orch.KAGGLE_HOURS_PER_WEEK_BUDGET
+    orch.save_state(state)
+
+    capsys.readouterr()
+    state = _check()
+    out = capsys.readouterr().out
+
+    assert state.lightning_hours_used_this_month == orch.LIGHTNING_HOURS_PER_MONTH_BUDGET
+    assert state.active_platform is None
+    assert "waiting for reset" in out

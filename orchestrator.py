@@ -127,7 +127,16 @@ def check_kaggle_status(kaggle_username: str) -> str:
     return "unknown"
 
 
-def launch_kaggle(kaggle_username: str, hf_token: str | None, hf_repo: str | None) -> str:
+def launch_kaggle(kaggle_username: str, hf_token: str | None, hf_repo: str | None) -> str | None:
+    """Returns the kernel id on success, or None if the push itself failed.
+
+    A push can fail outright if Kaggle's own weekly GPU quota (enforced
+    server-side, in real time) runs out -- something our wall-clock-based
+    kaggle_hours_used_this_week can't see coming, since it only accounts
+    for sessions after they've ended. Returning None rather than raising
+    lets the caller fall back to Lightning instead of crashing every 15
+    minutes until next week's quota reset.
+    """
     # Kaggle Secrets are only reachable by UI-triggered kernel runs, not by
     # `kaggle kernels push` -- confirmed empirically (identical failures on
     # every API-pushed run, success when the same kernel is run manually via
@@ -151,7 +160,12 @@ def launch_kaggle(kaggle_username: str, hf_token: str | None, hf_repo: str | Non
         )
         with open(os.path.join(tmp, "kaggle_entry.py"), "w") as f:
             f.write(injected + entry_src)
-        subprocess.run(["kaggle", "kernels", "push", "-p", tmp], check=True)
+        try:
+            subprocess.run(["kaggle", "kernels", "push", "-p", tmp], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"[orchestrator] kaggle kernels push failed ({e}); "
+                  "likely quota exhausted or a transient Kaggle-side error")
+            return None
 
     kernel = f"{kaggle_username}/{KAGGLE_KERNEL_SLUG}"
     print(f"[orchestrator] launched kaggle kernel {kernel}")
@@ -190,7 +204,8 @@ def check_lightning_status(job_id: str, teamspace: str) -> str:
     return "unknown"
 
 
-def launch_lightning_job(teamspace: str) -> str:
+def launch_lightning_job(teamspace: str) -> str | None:
+    """Returns the job name on success, or None if submission itself failed."""
     job_name = f"minigpt-{int(time.time())}"
     command = (
         f"git clone --depth 1 {REPO_URL} repo && cd repo && "
@@ -206,7 +221,12 @@ def launch_lightning_job(teamspace: str) -> str:
         "--env", f"HF_TOKEN={os.environ.get('HF_TOKEN', '')}",
         "--env", f"HF_REPO_ID={os.environ.get('HF_REPO_ID', '')}",
     ]
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[orchestrator] lightning job run failed ({e}); "
+              "likely quota exhausted or a transient Lightning-side error")
+        return None
     print(f"[orchestrator] launched lightning job {job_name} on {teamspace}")
     return job_name
 
@@ -243,11 +263,20 @@ def run_single_check(kaggle_username: str, lightning_teamspace: str,
         return
 
     if state.active_platform is None and state.kaggle_hours_used_this_week < KAGGLE_HOURS_PER_WEEK_BUDGET:
-        state.active_job_id = launch_kaggle(kaggle_username, hf_token, hf_repo)
-        state.active_platform = "kaggle"
-        state.active_started_at = now.timestamp()
-        save_state(state)
-        return
+        job_id = launch_kaggle(kaggle_username, hf_token, hf_repo)
+        if job_id is not None:
+            state.active_job_id = job_id
+            state.active_platform = "kaggle"
+            state.active_started_at = now.timestamp()
+            save_state(state)
+            return
+        # push failed outright (e.g. Kaggle's real weekly quota ran out,
+        # which our wall-clock hour tracking can't see coming) -- treat
+        # kaggle as exhausted for this period instead of retrying the same
+        # failing push every 15 minutes, and fall through to try lightning
+        # within this same check rather than waiting a full cycle
+        print("[orchestrator] treating kaggle as exhausted for this week after push failure")
+        state.kaggle_hours_used_this_week = KAGGLE_HOURS_PER_WEEK_BUDGET
 
     if state.active_platform == "kaggle":
         status = check_kaggle_status(kaggle_username)
@@ -266,11 +295,15 @@ def run_single_check(kaggle_username: str, lightning_teamspace: str,
 
     if (state.active_platform is None
             and state.lightning_hours_used_this_month < LIGHTNING_HOURS_PER_MONTH_BUDGET):
-        state.active_job_id = launch_lightning_job(lightning_teamspace)
-        state.active_platform = "lightning"
-        state.active_started_at = now.timestamp()
-        save_state(state)
-        return
+        job_id = launch_lightning_job(lightning_teamspace)
+        if job_id is not None:
+            state.active_job_id = job_id
+            state.active_platform = "lightning"
+            state.active_started_at = now.timestamp()
+            save_state(state)
+            return
+        print("[orchestrator] treating lightning as exhausted for this month after launch failure")
+        state.lightning_hours_used_this_month = LIGHTNING_HOURS_PER_MONTH_BUDGET
 
     if state.active_platform == "lightning":
         status = check_lightning_status(state.active_job_id, lightning_teamspace)
