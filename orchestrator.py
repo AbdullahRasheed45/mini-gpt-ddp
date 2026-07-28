@@ -223,12 +223,19 @@ def launch_lightning_job(teamspace: str) -> str | None:
     """Returns the job name on success, or None if submission itself failed."""
     job_name = f"minigpt-{int(time.time())}"
     # pytorch/pytorch:latest is a minimal image with no git ("sh: 1: git:
-    # not found", confirmed via the failed job's own logs) -- install it
-    # first rather than switching images, so the pinned PyTorch build stays
-    # exactly what train.py was actually validated against.
+    # not found", confirmed via a failed job's own logs) -- install it first
+    # rather than switching images. Its pre-installed torch is 2.2.1, which
+    # predates the device-generic torch.amp.GradScaler(device_type, ...) API
+    # train.py uses (AttributeError, confirmed via a second failed job's
+    # logs) -- and `pip install -r requirements.txt`'s unpinned torch>=2.2
+    # is already satisfied by 2.2.1, so pip silently skips upgrading it (the
+    # same "loose requirement treated as already-satisfied" trap hit on
+    # Kaggle). Unlike Kaggle's P100, a T4 has no old-GPU compatibility
+    # constraint forcing a specific build, so just force the upgrade here.
     command = (
         "apt-get update -qq && apt-get install -y -qq --no-install-recommends git && "
         f"git clone --depth 1 {REPO_URL} repo && cd repo && "
+        "pip install -q --upgrade torch && "
         "pip install -q -r requirements.txt && python lightning_train.py"
     )
     # Inconsistent across lightning-cli subcommands: `job list`/`job inspect`/
