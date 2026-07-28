@@ -20,16 +20,16 @@ If HF_TOKEN is already set when main() runs, that injected value is used;
 otherwise this falls back to Kaggle Secrets, for manual UI-triggered runs
 of this same kernel.
 
-Dependencies: deliberately does NOT `pip install -r requirements.txt`.
-Kaggle's base image ships a PyTorch build already matched to whatever GPU
-it provisions for this session (observed once: Tesla P100, not the
-requested T4s -- unclear whether machine_shape in kernel-metadata.json
-just isn't honored for API-pushed kernels, or T4s simply weren't available
-in the free-tier pool at that moment). Reinstalling torch from PyPI pulled
-in a build that had dropped support for the P100's older sm_60 compute
-capability and crashed every rank. Only the packages actually missing from
-the base image are installed here; torch/numpy are left untouched so
-whatever GPU shows up gets its correctly pre-matched PyTorch build.
+Dependencies: Kaggle has assigned Tesla P100 GPUs (compute capability
+sm_60) on every observed run so far, not the requested T4s -- unclear
+whether machine_shape in kernel-metadata.json just isn't honored for
+API-pushed kernels, or T4s simply weren't available in the free-tier pool.
+Both Kaggle's own base-image PyTorch and a freshly `pip install`-ed one
+(via requirements.txt, unpinned) had already dropped support for anything
+below sm_70 and crashed every rank identically. This explicitly installs
+an older CUDA-11.8-targeted build instead, which should retain sm_60
+kernels; a version/torch.cuda print right after install makes the actual
+resolved build visible in the Kaggle log for diagnosing if this is wrong.
 """
 
 import os
@@ -56,7 +56,11 @@ def main() -> None:
         run(["git", "clone", "--depth", "1", REPO_URL, WORKDIR])
     os.chdir(WORKDIR)
 
+    run(["pip", "install", "-q", "torch", "--index-url", "https://download.pytorch.org/whl/cu118"])
     run(["pip", "install", "-q", "huggingface_hub", "tiktoken", "datasets"])
+    run(["python", "-c",
+         "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, "
+         "'archs', torch.cuda.get_arch_list())"])
 
     if not os.path.exists("data/train.bin"):
         run(["python", "data.py", "--num_proc", "4"])
