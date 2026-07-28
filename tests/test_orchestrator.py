@@ -174,7 +174,7 @@ def test_launch_kaggle_injects_credentials_into_pushed_source_only(tmp_path, mon
         with open(os.path.join(push_dir, "kaggle_entry.py")) as f:
             captured["pushed_src"] = f.read()
         captured["push_dir"] = push_dir
-        return MagicMock(returncode=0)
+        return MagicMock(returncode=0, stdout="Kernel version 1 successfully pushed.\n", stderr="")
 
     monkeypatch.setattr(orch.subprocess, "run", fake_run)
 
@@ -191,6 +191,28 @@ def test_launch_kaggle_injects_credentials_into_pushed_source_only(tmp_path, mon
     # the real, git-tracked file is never modified
     assert (project_dir / "kaggle_entry.py").read_text() == original_entry_src
     compile(pushed_src, "kaggle_entry.py", "exec")  # injected prefix must be valid syntax
+
+
+def test_launch_kaggle_detects_error_message_despite_exit_zero(tmp_path, monkeypatch):
+    # real kaggle-cli behavior observed in production: it printed
+    # "Kernel push error: Maximum weekly GPU quota of 30.00 hours reached."
+    # and still exited 0, so check=True alone never caught this failure
+    monkeypatch.chdir(tmp_path)
+    project_dir = tmp_path / orch.KAGGLE_PROJECT_DIR
+    project_dir.mkdir()
+    (project_dir / "kernel-metadata.json").write_text("{}")
+    (project_dir / "kaggle_entry.py").write_text('"""doc"""\nimport os\n')
+
+    fake_result = MagicMock(
+        returncode=0,
+        stdout="Kernel push error: Maximum weekly GPU quota of 30.00 hours reached.\n",
+        stderr="",
+    )
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: fake_result)
+
+    kernel = orch.launch_kaggle("someuser", "tok-value", "some/repo")
+
+    assert kernel is None
 
 
 def test_kaggle_push_failure_falls_through_to_lightning_same_check(tmp_path, monkeypatch):

@@ -163,10 +163,18 @@ def launch_kaggle(kaggle_username: str, hf_token: str | None, hf_repo: str | Non
         )
         with open(os.path.join(tmp, "kaggle_entry.py"), "w") as f:
             f.write(injected + entry_src)
-        try:
-            subprocess.run(["kaggle", "kernels", "push", "-p", tmp], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"[orchestrator] kaggle kernels push failed ({e}); "
+        # kaggle-cli can print "Kernel push error: ..." (e.g. weekly GPU
+        # quota exceeded) while still exiting 0 -- confirmed empirically,
+        # this really happened and check=True did not catch it, leaving the
+        # orchestrator believing a push had succeeded when nothing launched.
+        # So capture output and scan it for an error, not just the exit code.
+        result = subprocess.run(["kaggle", "kernels", "push", "-p", tmp],
+                                 capture_output=True, text=True)
+        print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
+        if result.returncode != 0 or "error" in result.stdout.lower() or "error" in result.stderr.lower():
+            print(f"[orchestrator] kaggle kernels push failed (exit={result.returncode}); "
                   "likely quota exhausted or a transient Kaggle-side error")
             return None
 
