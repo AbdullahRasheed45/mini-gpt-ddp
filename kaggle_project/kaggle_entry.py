@@ -36,6 +36,14 @@ cu118 build script (checked directly against PyTorch's GitHub tag) still
 includes 6.0 in TORCH_CUDA_ARCH_LIST, and it's confirmed available for
 Kaggle's cp312 -- so this pins that version explicitly with
 --force-reinstall to guarantee the swap actually happens this time.
+
+GPU count: once the compute-capability crash was fixed, the next failure
+was rank 1 getting "invalid device ordinal" while rank 0 (cuda:0) started
+fine -- this session only actually had 1 GPU, not the 2 requested via
+machine_shape. torchrun's --nproc_per_node is therefore set from the
+actual torch.cuda.device_count() at runtime rather than hardcoded to 2,
+so this degrades to single-GPU training rather than crashing whenever
+Kaggle hands out fewer GPUs than requested.
 """
 
 import os
@@ -69,11 +77,18 @@ def main() -> None:
          "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, "
          "'archs', torch.cuda.get_arch_list())"])
 
+    device_count = subprocess.run(
+        ["python", "-c", "import torch; print(torch.cuda.device_count())"],
+        capture_output=True, text=True, check=True,
+    )
+    n_gpus = int(device_count.stdout.strip())
+    print(f"detected {n_gpus} GPU(s)")
+
     if not os.path.exists("data/train.bin"):
         run(["python", "data.py", "--num_proc", "4"])
 
     run([
-        "torchrun", "--standalone", "--nproc_per_node=2", "train.py",
+        "torchrun", "--standalone", f"--nproc_per_node={n_gpus}", "train.py",
         "--run_name", "ddp_2gpu",
     ])
 
