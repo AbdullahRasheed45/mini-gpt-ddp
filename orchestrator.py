@@ -197,13 +197,17 @@ def check_lightning_status(job_id: str, teamspace: str) -> str:
         print(f"[orchestrator] lightning job inspect failed: {result.stderr}")
         return "unknown"
 
-    try:
-        info = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print(f"[orchestrator] could not parse lightning job JSON: {result.stdout!r}")
+    # `lightning job inspect`'s JSON output line-wraps long string values
+    # (e.g. splits the "command" field across lines with a literal, unescaped
+    # newline) -- confirmed empirically, this breaks strict json.loads() on
+    # otherwise-valid-looking output. Extract the status field by regex
+    # instead of depending on the whole payload parsing as JSON.
+    match = re.search(r'"status"\s*:\s*"([^"]+)"', result.stdout)
+    if not match:
+        print(f"[orchestrator] could not find status field in lightning job output: {result.stdout!r}")
         return "unknown"
 
-    status = str(info.get("status") or info.get("state") or "").lower()
+    status = match.group(1).lower()
     if status in ("completed", "complete", "succeeded", "success"):
         return "complete"
     if status in ("failed", "error", "stopped", "cancelled"):

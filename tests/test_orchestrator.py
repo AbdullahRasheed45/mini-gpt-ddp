@@ -193,6 +193,33 @@ def test_launch_kaggle_injects_credentials_into_pushed_source_only(tmp_path, mon
     compile(pushed_src, "kaggle_entry.py", "exec")  # injected prefix must be valid syntax
 
 
+def test_check_lightning_status_parses_line_wrapped_json(monkeypatch):
+    # real `lightning job inspect` output observed in production: long
+    # string values get line-wrapped with a literal newline mid-string,
+    # which makes the payload invalid JSON despite looking well-formed
+    fake_result = MagicMock(
+        returncode=0,
+        stdout=(
+            '{\n'
+            '    "command": "git clone --depth 1 \n'
+            'https://github.com/AbdullahRasheed45/mini-gpt-ddp.git repo && cd repo && pip \n'
+            'install -q -r requirements.txt && python lightning_train.py",\n'
+            '    "image": "pytorch/pytorch:latest",\n'
+            '    "machine": "T4",\n'
+            '    "name": "minigpt-1785250910",\n'
+            '    "status": "Pending",\n'
+            '    "studio": null,\n'
+            '    "teamspace": "abdullahrasheed45/default-project",\n'
+            '    "total_cost": 0.0\n'
+            '}\n'
+        ),
+        stderr="",
+    )
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: fake_result)
+
+    assert orch.check_lightning_status("minigpt-1785250910", "abdullahrasheed45/default-project") == "queued"
+
+
 def test_launch_kaggle_detects_error_message_despite_exit_zero(tmp_path, monkeypatch):
     # real kaggle-cli behavior observed in production: it printed
     # "Kernel push error: Maximum weekly GPU quota of 30.00 hours reached."
