@@ -24,12 +24,18 @@ Dependencies: Kaggle has assigned Tesla P100 GPUs (compute capability
 sm_60) on every observed run so far, not the requested T4s -- unclear
 whether machine_shape in kernel-metadata.json just isn't honored for
 API-pushed kernels, or T4s simply weren't available in the free-tier pool.
-Both Kaggle's own base-image PyTorch and a freshly `pip install`-ed one
-(via requirements.txt, unpinned) had already dropped support for anything
-below sm_70 and crashed every rank identically. This explicitly installs
-an older CUDA-11.8-targeted build instead, which should retain sm_60
-kernels; a version/torch.cuda print right after install makes the actual
-resolved build visible in the Kaggle log for diagnosing if this is wrong.
+
+`pip install torch --index-url .../cu118` (no version pin, no
+--force-reinstall) turned out to be a no-op: pip treats an unversioned
+requirement as already satisfied by whatever's installed and never
+touches the index at all. The diagnostic print below confirmed it left
+Kaggle's base-image torch (2.10.0+cu128) in place both times, which is
+why "skip reinstalling" and "reinstall via cu118" produced byte-identical
+failures -- they were never actually different. torch 2.6.0's real
+cu118 build script (checked directly against PyTorch's GitHub tag) still
+includes 6.0 in TORCH_CUDA_ARCH_LIST, and it's confirmed available for
+Kaggle's cp312 -- so this pins that version explicitly with
+--force-reinstall to guarantee the swap actually happens this time.
 """
 
 import os
@@ -56,7 +62,8 @@ def main() -> None:
         run(["git", "clone", "--depth", "1", REPO_URL, WORKDIR])
     os.chdir(WORKDIR)
 
-    run(["pip", "install", "-q", "torch", "--index-url", "https://download.pytorch.org/whl/cu118"])
+    run(["pip", "install", "-q", "--force-reinstall", "torch==2.6.0",
+         "--index-url", "https://download.pytorch.org/whl/cu118"])
     run(["pip", "install", "-q", "huggingface_hub", "tiktoken", "datasets"])
     run(["python", "-c",
          "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, "
