@@ -113,17 +113,20 @@ def check_kaggle_status(kaggle_username: str) -> str:
               f"stdout={result.stdout!r} stderr={result.stderr!r}")
         return "unknown"
 
-    # observed in the wild as both a bare word ("error") and an
-    # enum-qualified string ("KernelWorkerStatus.ERROR")
+    # Observed in the wild as a bare word ("error"), an enum-qualified
+    # string ("KernelWorkerStatus.ERROR"), and an underscored multi-word
+    # value ("KernelWorkerStatus.CANCEL_ACKNOWLEDGED") -- an exact-match
+    # allowlist has already missed a real variant once, so terminal/error
+    # states are matched by substring instead of guessing every exact form.
     status = match.group(1).rsplit(".", 1)[-1].lower()
     if status == "complete":
         return "complete"
-    if status in ("error", "cancelled", "cancelacknowledged"):
-        return "error"
     if status == "running":
         return "running"
     if status == "queued":
         return "queued"
+    if "error" in status or "cancel" in status:
+        return "error"
     return "unknown"
 
 

@@ -144,6 +144,21 @@ def test_check_kaggle_status_parses_bare_value(monkeypatch):
     assert orch.check_kaggle_status("someuser") == "running"
 
 
+def test_check_kaggle_status_parses_cancel_acknowledged(monkeypatch):
+    # real kaggle-cli output observed in production after a ~8hr training
+    # session was cancelled: an underscored multi-word enum value that an
+    # exact-match allowlist (a prior fix) failed to recognize, leaving the
+    # orchestrator stuck thinking a dead kernel was still active
+    fake_result = MagicMock(
+        stdout='someuser/mini-gpt-ddp-orchestrator has status '
+               '"KernelWorkerStatus.CANCEL_ACKNOWLEDGED"\n',
+        stderr="",
+    )
+    monkeypatch.setattr(orch.subprocess, "run", lambda *a, **k: fake_result)
+
+    assert orch.check_kaggle_status("someuser") == "error"
+
+
 def test_launch_kaggle_injects_credentials_into_pushed_source_only(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     project_dir = tmp_path / orch.KAGGLE_PROJECT_DIR
