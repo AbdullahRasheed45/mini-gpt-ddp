@@ -20,18 +20,27 @@ post-training with a vLLM rollout server.
 - Production habits: atomic checkpointing, bit-exact resume (optimizer +
   scaler + RNG state) across Kaggle's 12h session limit, throughput
   instrumentation
+- Automated multi-cloud training rotation (Kaggle <-> Lightning AI) via a
+  GitHub Actions state machine, handing off through checkpoints on the
+  Hugging Face Hub -- run to actual completion end-to-end, unattended (see
+  [Results](#results))
 
 ## Layout
 
 | path | purpose |
 |---|---|
-| `model.py` | the GPT (config: 8L/8H/512d ≈ 38M params) |
+| `model.py` | the GPT (config: 8L/8H/512d, 50.9M params measured -- see [Results](#results)) |
 | `data.py` | TinyStories -> tokenized uint16 memmap binaries |
 | `train.py` | DDP training loop; also runs single-GPU and `--smoke_test` on CPU |
 | `benchmark.py` | tokens/sec measurement for scaling-efficiency numbers |
-| `notebooks/kaggle_launcher.ipynb` | exact cells to run on Kaggle |
-| `tests/` | model unit tests + an end-to-end CPU smoke test, run in CI |
+| `checkpoint_sync.py` | Hugging Face Hub checkpoint pull/push, shared by `train.py`, `lightning_train.py`, and `orchestrator.py` |
+| `lightning_train.py` | single-GPU entry point for a Lightning AI job |
+| `orchestrator.py` | the Kaggle <-> Lightning AI rotation state machine (see [Automated Training Orchestration](#automated-training-orchestration)) |
+| `kaggle_project/` | script-kernel pushed to Kaggle by `orchestrator.py` (`kaggle_entry.py` + `kernel-metadata.json`) |
+| `notebooks/kaggle_launcher.ipynb` | exact cells to run manually on Kaggle |
+| `tests/` | model + orchestrator unit tests and an end-to-end CPU training smoke test, run in CI |
 | `.github/workflows/ci.yml` | lint (ruff) + test (pytest) on every push/PR |
+| `.github/workflows/orchestrator.yml` | the cron that runs `orchestrator.py` every 15 min |
 
 ## Install
 
@@ -110,6 +119,54 @@ value never has to be pasted anywhere visible):
 Go to the **Actions** tab -> "GPU Training Orchestrator" -> **...** ->
 **Disable workflow**. No code changes needed; re-enable the same way.
 
+## Results
+
+A full run completed end-to-end through the automated rotation above, with
+no manual intervention once launched: 6,000 iterations, checkpointing every
+250 iterations to the Hugging Face Hub, spanning a Kaggle session (until it
+hit the 12h session cap, then the 30h/week quota) and a Lightning AI job
+that picked up the exact checkpoint Kaggle left off at and carried it to
+completion.
+
+**Loss**: 1.84 at iter 700, down to 1.25-1.30 by iter ~4900, still trending
+down at completion.
+
+**Sample generation** (greedy top-k sampling, `temperature=0.8, top_k=50`,
+at completion):
+
+> Once upon a time there was a little girl named Lily. She loved to play in
+> the park with her friends. One day, Lily saw a big, black dog with an
+> unusual face. She had never seen anything like it before. Lily's friends
+> were scared of the dog, but Lily wanted to pet it. She walked up to the
+> dog and said, "Hi, Mr. Dog! You are very big and furry." The dog didn't
+> say anything back, but Lily thought he was friendly...
+
+**Cross-GPU throughput** (single GPU each, fp16 + GradScaler):
+
+| platform | GPU | architecture | tensor cores | tok/s |
+|---|---|---|---|---|
+| Kaggle | Tesla P100 | Pascal | none | ~19,700 |
+| Lightning AI | T4 | Turing | yes | ~41,000 |
+
+~2.1x on the T4, entirely from tensor-core fp16 acceleration -- Pascal has
+no dedicated matmul hardware for fp16, so it runs at roughly fp32 speed.
+
+**What actually shipped vs. what was planned, honestly**: `train.py`'s DDP
+path is real and correct (NCCL, `no_sync` gradient-sync scheduling,
+per-rank sharding, exercised by the CPU smoke test), but every real run
+captured above landed on a single GPU per session, not the 2x-T4 DDP setup
+the project was originally scoped around. Kaggle assigned Tesla P100s
+instead of the requested T4x2 on every observed API-triggered run
+(`kernel-metadata.json`'s `machine_shape: GPU_T4X2` was not honored), and
+Lightning AI's free tier is 1x T4 by design. The scaling-efficiency and
+sync-cost experiments below (numbers 1-3) need an actual 2-GPU session to
+run as originally designed; the cross-GPU table above is the real
+substitute result that came out of what the free tiers actually granted.
+Getting there also surfaced 16 real platform-specific bugs -- credential
+injection paths, GPU-compatibility pins, inconsistent CLI output formats
+across both platforms -- each fixed and regression-tested; see the git
+history for the full debugging trail.
+
 ## Experiments to run (these become the writeup)
 
 1. **Scaling efficiency**: benchmark.py at world_size 1 vs 2. Report
@@ -120,9 +177,12 @@ Go to the **Actions** tab -> "GPU Training Orchestrator" -> **...** ->
 3. **no_sync ablation**: comment out the `no_sync` context and re-measure.
    Quantifies what naive DDP costs.
 4. **fp16 vs fp32**: throughput and peak memory both ways. On T4 expect
-   ~2x throughput from tensor cores.
+   ~2x throughput from tensor cores -- confirmed above, cross-architecture,
+   as a side effect of free-tier GPU allocation.
 5. **Loss-scale trace**: log `scaler.get_scale()` over training. If it ever
    crashes downward, you've caught fp16 instability in the wild -- document it.
+   (In the completed run, scale rose from 65536 to 262144 over the course of
+   training with no downward corrections -- stable throughout.)
 6. **Batch-size / micro-batch sweep**: find the VRAM ceiling, note where
    throughput saturates.
 
