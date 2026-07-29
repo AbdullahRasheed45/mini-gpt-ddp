@@ -151,21 +151,29 @@ at completion):
 ~2.1x on the T4, entirely from tensor-core fp16 acceleration -- Pascal has
 no dedicated matmul hardware for fp16, so it runs at roughly fp32 speed.
 
-**What actually shipped vs. what was planned, honestly**: `train.py`'s DDP
-path is real and correct (NCCL, `no_sync` gradient-sync scheduling,
-per-rank sharding, exercised by the CPU smoke test), but every real run
-captured above landed on a single GPU per session, not the 2x-T4 DDP setup
-the project was originally scoped around. Kaggle assigned Tesla P100s
+**2x-T4 DDP status, honestly**: the DDP path in `train.py` (NCCL init,
+`DistributedDataParallel` wrapping, `no_sync()` gradient-sync scheduling
+during accumulation, per-rank data sharding via seeded offsets) is
+implemented exactly as it would be reviewed for correctness in any
+production DDP job -- but no run captured in this README actually
+exercised it on real multi-GPU hardware yet. Kaggle assigned Tesla P100s
 instead of the requested T4x2 on every observed API-triggered run
 (`kernel-metadata.json`'s `machine_shape: GPU_T4X2` was not honored), and
-Lightning AI's free tier is 1x T4 by design. The scaling-efficiency and
-sync-cost experiments below (numbers 1-3) need an actual 2-GPU session to
-run as originally designed; the cross-GPU table above is the real
-substitute result that came out of what the free tiers actually granted.
-Getting there also surfaced 16 real platform-specific bugs -- credential
-injection paths, GPU-compatibility pins, inconsistent CLI output formats
-across both platforms -- each fixed and regression-tested; see the git
-history for the full debugging trail.
+Lightning AI's free tier is 1x T4 by design, so both completed runs above
+fell back to single-GPU automatically (see [Fix Kaggle single-GPU
+sessions](https://github.com/AbdullahRasheed45/mini-gpt-ddp/commit/a54f421)).
+The CPU smoke test (`--smoke_test`) only covers the single-process training
+loop, not the DDP code path -- it isn't evidence either way. The
+scaling-efficiency and sync-cost experiments below (numbers 1-3) are still
+open and need an actual 2-GPU session (a manual Kaggle notebook run with
+Accelerator set to GPU T4 x2, per `notebooks/kaggle_launcher.ipynb`, is the
+most reliable way to get one); the cross-GPU throughput table above is the
+real result that came out of what the automated free-tier runs actually
+granted, not a replacement for that experiment. Getting the automation this
+far also surfaced 16 real platform-specific bugs -- credential injection
+paths, GPU-compatibility pins, inconsistent CLI output formats across both
+platforms -- each fixed and regression-tested; see the git history for the
+full debugging trail.
 
 ## Experiments to run (these become the writeup)
 
